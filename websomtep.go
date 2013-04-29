@@ -173,7 +173,7 @@ func (m *Message) parseMultipart(r io.Reader, boundary string) error {
 		content := string(slurp)
 		if part.Header.Get("Content-Transfer-Encoding") == "quoted-printable" {
 			enc := qprintable.DetectEncoding(content)
-			slurp, _ = ioutil.ReadAll(qprintable.NewDecoder(enc, part))
+			slurp, _ = ioutil.ReadAll(qprintable.NewDecoder(enc, bytes.NewBufferString(content)))
 			content = string(slurp)
 		}
 		if partType == "text/plain" {
