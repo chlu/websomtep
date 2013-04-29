@@ -31,6 +31,7 @@ import (
 
 	"code.google.com/p/go.net/websocket"
 	"github.com/chlu/go-smtpd/smtpd"
+	"github.com/sloonz/go-qprintable"
 )
 
 const basePkg = "github.com/chlu/websomtep"
@@ -167,11 +168,18 @@ func (m *Message) parseMultipart(r io.Reader, boundary string) error {
 		if !strings.HasPrefix(partType, "text/") {
 			continue
 		}
+
 		slurp, _ := ioutil.ReadAll(part)
-		if partType == "text/plain" {
-			m.Body = string(slurp)
+		content := string(slurp)
+		if part.Header.Get("Content-Transfer-Encoding") == "quoted-printable" {
+			enc := qprintable.DetectEncoding(content)
+			slurp, _ = ioutil.ReadAll(qprintable.NewDecoder(enc, part))
+			content = string(slurp)
 		}
-		m.Bodies[partType] = string(slurp)
+		if partType == "text/plain" {
+			m.Body = content
+		}
+		m.Bodies[partType] = content
 	}
 	return nil
 }
@@ -448,7 +456,7 @@ func main() {
 		http.HandleFunc("/resend", resendHandler)
 	}
 	http.Handle("/stream", websocket.Handler(streamMail))
-	http.Handle("/assets/", http.StripPrefix("/assets", http.FileServer(http.Dir(resourceRoot + "/res/public/"))))
+	http.Handle("/assets/", http.StripPrefix("/assets", http.FileServer(http.Dir(resourceRoot+"/res/public/"))))
 
 	sln, err := net.Listen("tcp", *smtpListen)
 	if err != nil {
