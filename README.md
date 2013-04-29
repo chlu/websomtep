@@ -13,7 +13,12 @@ This fork contains some further work based on https://github.com/bradfitz/websom
 
 Start a local server and listen on default ports:
 
-    cd $GOPATH/src/github.com/chlu/websomtep
     websomtep
 
 See `websomtep -h` for supported options.
+
+Open [http://localhost:8081/] in your webbrowser and send e-mails via SMTP to `localhost:2500`.
+
+# REST services
+
+A list of recent messages can be accessed via `GET /messages`. This list can be resetted via `POST /reset`. These services are experimental and subject to change.
