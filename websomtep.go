@@ -15,6 +15,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"go/build"
 	"html"
 	"html/template"
 	"io"
@@ -32,11 +33,15 @@ import (
 	"github.com/chlu/go-smtpd/smtpd"
 )
 
+const basePkg = "github.com/chlu/websomtep"
+
 var (
 	webListen  = flag.String("listen", ":8081", "address to listen for HTTP/WebSockets on")
 	smtpListen = flag.String("smtp", ":2500", "address to listen for SMTP on")
 	wsAddr     = flag.String("ws", "localhost:8081", "websocket host[:port], as seen by JavaScript")
 	debug      = flag.Bool("debug", false, "enable debug features")
+
+	resourceRoot string
 )
 
 // Maximum number of messages to store in the buffer
@@ -357,7 +362,7 @@ func streamMail(ws *websocket.Conn) {
 	}
 }
 
-var uiTemplate = template.Must(template.ParseFiles("res/private/ui.html"))
+var uiTemplate *template.Template
 
 type uiTemplateData struct {
 	WSAddr     string
@@ -367,7 +372,7 @@ type uiTemplateData struct {
 func homeHandler(w http.ResponseWriter, r *http.Request) {
 	var err error
 	if *debug {
-		uiTemplate, err = template.ParseFiles("res/private/ui.html")
+		uiTemplate, err = template.ParseFiles(resourceRoot + "/res/private/ui.html")
 		if err != nil {
 			fmt.Fprint(w, err)
 			return
@@ -423,6 +428,17 @@ func (w *watchCloseConn) Close() error {
 func main() {
 	flag.Parse()
 
+	if *debug {
+		resourceRoot = "."
+	} else {
+		p, err := build.Default.Import(basePkg, "", build.FindOnly)
+		if err != nil {
+			log.Fatalf("Couldn't find resource files: %v", err)
+		}
+		resourceRoot = p.Dir
+	}
+	uiTemplate = template.Must(template.ParseFiles(resourceRoot + "/res/private/ui.html"))
+
 	messageBuffer = make([]*Message, 0)
 
 	http.HandleFunc("/", homeHandler)
@@ -432,7 +448,7 @@ func main() {
 		http.HandleFunc("/resend", resendHandler)
 	}
 	http.Handle("/stream", websocket.Handler(streamMail))
-	http.Handle("/assets/", http.StripPrefix("/assets", http.FileServer(http.Dir("res/public/"))))
+	http.Handle("/assets/", http.StripPrefix("/assets", http.FileServer(http.Dir(resourceRoot + "/res/public/"))))
 
 	sln, err := net.Listen("tcp", *smtpListen)
 	if err != nil {
