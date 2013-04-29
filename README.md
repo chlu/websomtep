@@ -1,15 +1,19 @@
 websomtep
 =========
 
-Combination Pizza Hut Taco Bell?
+**A fake SMTP server that delivers mail to the browser and provides a simple REST service for testing e-mail.**
 
-This is a combination SMTP / WebSocket server.
+This fork contains some further work based on https://github.com/bradfitz/websomtep.
 
-This was a quick hack to demo at the inaugural GoSF meetup.
+# Installation
 
-This is an SMTP server that delivers all incoming email to all
-connected browser (websocket) clients.
+    go get github.com/chlu/websomtep
 
-*DEMO*: http://websomtep.danga.com/
+# Running
 
-TOTALLY USEFUL.
+Start a local server and listen on default ports:
+
+    cd $GOPATH/src/github.com/chlu/websomtep
+    websomtep
+
+See `websomtep -h` for supported options.

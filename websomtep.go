@@ -35,7 +35,7 @@ import (
 var (
 	webListen  = flag.String("listen", ":8081", "address to listen for HTTP/WebSockets on")
 	smtpListen = flag.String("smtp", ":2500", "address to listen for SMTP on")
-	wsAddr     = flag.String("ws", "websomtep.danga.com", "websocket host[:port], as seen by JavaScript")
+	wsAddr     = flag.String("ws", "localhost:8081", "websocket host[:port], as seen by JavaScript")
 	debug      = flag.Bool("debug", false, "enable debug features")
 )
 
