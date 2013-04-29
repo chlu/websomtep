@@ -11,6 +11,7 @@ package main
 import (
 	"bytes"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -27,17 +28,19 @@ import (
 	"strings"
 	"sync"
 
-	"code.google.com/p/go-smtpd/smtpd"
 	"code.google.com/p/go.net/websocket"
+	"github.com/chlu/go-smtpd/smtpd"
 )
 
 var (
 	webListen  = flag.String("listen", ":8081", "address to listen for HTTP/WebSockets on")
 	smtpListen = flag.String("smtp", ":2500", "address to listen for SMTP on")
-	domain     = flag.String("domain", "websomtep.danga.com", "required domain name in RCPT lines")
 	wsAddr     = flag.String("ws", "websomtep.danga.com", "websocket host[:port], as seen by JavaScript")
 	debug      = flag.Bool("debug", false, "enable debug features")
 )
+
+// Maximum number of messages to store in the buffer
+const messageBufferLength = 10
 
 // Message implements smtpd.Envelope by streaming the message to all
 // connected websocket clients.
@@ -45,11 +48,12 @@ type Message struct {
 	// HTML-escaped fields sent to the client
 	From, To string
 	Subject  string
-	Body     string // includes images (via data URLs)
+	Body     string // Plain text or first text part body, includes images (via data URLs)
+	Raw      string
+	Bodies   map[string]string // map text parts by type to content
 
 	// internal state
 	images []image
-	bodies []string
 	buf    bytes.Buffer // for accumulating email as it comes in
 	msg    interface{}  // alternate message to send
 }
@@ -72,12 +76,18 @@ type image struct {
 }
 
 func (m *Message) parse(r io.Reader) error {
+	slurp, _ := ioutil.ReadAll(r)
+	m.Raw = string(slurp)
+	r = bytes.NewBufferString(m.Raw)
+
 	msg, err := mail.ReadMessage(r)
 	if err != nil {
 		return err
 	}
 	m.Subject = msg.Header.Get("Subject")
 	m.To = msg.Header.Get("To")
+
+	log.Print(msg.Header)
 
 	mediaType, params, err := mime.ParseMediaType(msg.Header.Get("Content-Type"))
 	if err != nil || !strings.HasPrefix(mediaType, "multipart/") {
@@ -90,7 +100,7 @@ func (m *Message) parse(r io.Reader) error {
 	}
 	// If we didn't find a text/plain body, pick the first body we did find.
 	if m.Body == "" {
-		for _, body := range m.bodies {
+		for _, body := range m.Bodies {
 			if body != "" {
 				m.Body = body
 				break
@@ -105,6 +115,7 @@ func (m *Message) parse(r io.Reader) error {
 // and multipart/alternative innards.
 func (m *Message) parseMultipart(r io.Reader, boundary string) error {
 	mr := multipart.NewReader(r, boundary)
+	m.Bodies = make(map[string]string)
 	for {
 		part, err := mr.NextPart()
 		if err == io.EOF {
@@ -154,9 +165,8 @@ func (m *Message) parseMultipart(r io.Reader, boundary string) error {
 		slurp, _ := ioutil.ReadAll(part)
 		if partType == "text/plain" {
 			m.Body = string(slurp)
-		} else {
-			m.bodies = append(m.bodies, string(slurp))
 		}
+		m.Bodies[partType] = string(slurp)
 	}
 	return nil
 }
@@ -173,9 +183,6 @@ func removeNewlines(p []byte) []byte {
 
 func (m *Message) AddRecipient(rcpt smtpd.MailAddress) error {
 	m.To = strings.ToLower(rcpt.Email())
-	if !strings.HasSuffix(m.To, "@"+*domain) {
-		return errors.New("Invalid recipient domain")
-	}
 	return nil
 }
 
@@ -191,6 +198,7 @@ func (m *Message) Write(line []byte) error {
 	return nil
 }
 
+// Close() is called for smtp.Envelope by the smtpd server
 func (m *Message) Close() error {
 	if err := m.parse(&m.buf); err != nil {
 		return err
@@ -207,15 +215,47 @@ func (m *Message) Close() error {
 		m.Body = m.Body + fmt.Sprintf("<p><img src='data:%s;base64,%s'></p>", im.Type, base64.StdEncoding.EncodeToString(im.Data))
 	}
 	broadcast(m)
+	m.storeInBuffer()
 	if *debug {
 		backlog = append(backlog, m)
 	}
 	return nil
 }
 
+var messageBuffer []*Message
+
+func (m *Message) storeInBuffer() {
+	// FIXME Nicer way to prepend elements? Use some sort of stack?
+	var sl []*Message
+	sl = append(sl, m)
+	messageBuffer = append(sl, messageBuffer...)
+
+	if len(messageBuffer) > messageBufferLength {
+		messageBuffer = messageBuffer[0:(messageBufferLength - 1)]
+	}
+}
+
+func messagesHandler(w http.ResponseWriter, r *http.Request) {
+	data, err := json.Marshal(messageBuffer)
+	if err != nil {
+		fmt.Fprintf(w, "Error encoding JSON: %v", err)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(data)
+}
+
+func resetMessagesHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	messageBuffer = make([]*Message, 0)
+}
+
 var backlog []*Message
 
-func resend(w http.ResponseWriter, r *http.Request) {
+func resendHandler(w http.ResponseWriter, r *http.Request) {
 	l := len(backlog)
 	if l == 0 {
 		return
@@ -317,25 +357,25 @@ func streamMail(ws *websocket.Conn) {
 	}
 }
 
-var uiTemplate = template.Must(template.ParseFiles("ui.html"))
+var uiTemplate = template.Must(template.ParseFiles("res/private/ui.html"))
 
 type uiTemplateData struct {
-	WSAddr string
-	Domain string
+	WSAddr     string
+	SmtpListen string
 }
 
-func home(w http.ResponseWriter, r *http.Request) {
+func homeHandler(w http.ResponseWriter, r *http.Request) {
 	var err error
 	if *debug {
-		uiTemplate, err = template.ParseFiles("ui.html")
+		uiTemplate, err = template.ParseFiles("res/private/ui.html")
 		if err != nil {
 			fmt.Fprint(w, err)
 			return
 		}
 	}
 	err = uiTemplate.Execute(w, uiTemplateData{
-		WSAddr: *wsAddr,
-		Domain: *domain,
+		WSAddr:     *wsAddr,
+		SmtpListen: *smtpListen,
 	})
 	if err != nil {
 		log.Println(err)
@@ -383,11 +423,16 @@ func (w *watchCloseConn) Close() error {
 func main() {
 	flag.Parse()
 
-	http.HandleFunc("/", home)
+	messageBuffer = make([]*Message, 0)
+
+	http.HandleFunc("/", homeHandler)
+	http.HandleFunc("/messages", messagesHandler)
+	http.HandleFunc("/reset", resetMessagesHandler)
 	if *debug {
-		http.HandleFunc("/resend", resend)
+		http.HandleFunc("/resend", resendHandler)
 	}
 	http.Handle("/stream", websocket.Handler(streamMail))
+	http.Handle("/assets/", http.StripPrefix("/assets", http.FileServer(http.Dir("res/public/"))))
 
 	sln, err := net.Listen("tcp", *smtpListen)
 	if err != nil {
